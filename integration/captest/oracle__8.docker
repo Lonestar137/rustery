@@ -1,0 +1,5 @@
+FROM docker.io/library/oraclelinux:8
+
+RUN useradd --create-home prime
+RUN dnf update
+

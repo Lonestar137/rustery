@@ -1,0 +1,4 @@
+FROM docker.io/library/oraclelinux:8 as linux
+FROM docker.io/library/python:latest
+
+RUN pip install ptpython

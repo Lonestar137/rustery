@@ -1,0 +1,1 @@
+FROM localhost/integration/captest/capnet/capnet:310

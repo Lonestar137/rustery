@@ -1,0 +1,16 @@
+FROM python:3.10-slim
+
+# Create a non-root user
+RUN useradd -m prime
+
+# Copy the Python script into the container
+COPY ./cap_net_raw_test.py /app/cap_net_raw_test.py
+
+# Set the working directory
+WORKDIR /app
+
+# Run the script as the non-root user
+USER prime
+
+# Command to run the script
+CMD ["python", "cap_net_raw_test.py"]

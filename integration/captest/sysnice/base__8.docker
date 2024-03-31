@@ -1,0 +1,4 @@
+FROM localhost/integration/captest/oracle:8
+
+
+RUN dnf install -y vim
