@@ -1,3 +1,4 @@
+use clap::Parser;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
@@ -10,13 +11,7 @@ use std::vec;
 */
 
 trait Builder {
-    fn new(
-        registry: &str,
-        client: &str,
-        dryrun: bool,
-        basepath: PathBuf,
-        file_extension: &str,
-    ) -> Self;
+    fn new(config: &CommandlineArgs) -> Self;
     fn glob(&mut self, basepath: PathBuf, file_extension: &str);
     fn read_edges(&mut self);
     fn make_dependency_tree(&mut self);
@@ -25,10 +20,7 @@ trait Builder {
 }
 
 struct RegistryBuilder {
-    file_extension: String,
-    registry: String,
-    client: String,
-    dryrun: bool,
+    config: CommandlineArgs,
     files: Vec<PathBuf>,
     edges: Vec<(String, String)>,
     dep_tree: HashMap<String, Vec<String>>,
@@ -36,24 +28,15 @@ struct RegistryBuilder {
 }
 
 impl Builder for RegistryBuilder {
-    fn new(
-        registry: &str,
-        client: &str,
-        dryrun: bool,
-        basepath: PathBuf,
-        file_extension: &str,
-    ) -> Self {
+    fn new(config: &CommandlineArgs) -> Self {
         let mut rb = Self {
-            file_extension: file_extension.to_string(),
-            registry: registry.to_string(),
-            client: client.to_string(),
-            dryrun,
+            config: config.to_owned(),
             files: vec![],
             edges: vec![],
             dep_tree: HashMap::new(),
             build_queue: VecDeque::new(),
         };
-        rb.glob(basepath, file_extension);
+        rb.glob(config.basepath.to_owned(), &config.extension);
         rb.read_edges();
         rb.make_dependency_tree();
         rb.make_build_queue();
@@ -112,7 +95,7 @@ impl Builder for RegistryBuilder {
                         .replacen("./", "/", 1)
                         .replace("__", ":")
                         .replace(".", "")
-                        .rsplit_once(&self.file_extension)
+                        .rsplit_once(&self.config.extension)
                         .unwrap()
                         .0;
                 edges.push((file_image, image));
@@ -176,30 +159,35 @@ impl Builder for RegistryBuilder {
 
     fn build(&self) {
         for image in &self.build_queue {
-            let mut build_args = vec!["build", "--file", image];
+            let mut build_args = vec!["build", "--file", image, "."];
             let mut tag_args = vec!["tag", image];
-            let remote_image = image.replacen("localhost", &self.registry, 1);
+            let remote_image = match &self.config.registry {
+                Some(registry) => image.replacen("localhost", registry.as_str(), 1),
+                None => image.replacen("localhost", "localhost", 1),
+            };
 
-            if &self.client == "podman" {
+            if &self.config.client == "podman" {
                 build_args.extend(["--format", "docker"]);
             }
 
-            if &self.registry != "localhost" {
-                tag_args.extend(vec![image.as_str(), remote_image.as_str()]);
+            // if &self.config.registry != "localhost" {
+            if self.config.registry.is_some() {
+                tag_args.extend(vec![remote_image.as_str()]);
             }
 
-            if self.dryrun {
-                println!("{} {}", &self.client, build_args.join(" "));
-                if self.registry != "localhost" {
-                    println!("{} {}", &self.client, tag_args.join(" "));
+            if self.config.dryrun {
+                println!("{} {}", &self.config.client, build_args.join(" "));
+                if self.config.registry.is_some() {
+                    println!("{} {}", &self.config.client, tag_args.join(" "));
                 }
             } else {
-                let build_output = Command::new(&self.client)
+                // TODO: test this part out.
+                let build_output = Command::new(&self.config.client)
                     .args(build_args)
                     .output()
                     .expect("");
-                if self.registry != "localhost" {
-                    let tag_output = Command::new(&self.client)
+                if self.config.registry.is_some() {
+                    let tag_output = Command::new(&self.config.client)
                         .args(tag_args)
                         .output()
                         .expect("");
@@ -209,19 +197,33 @@ impl Builder for RegistryBuilder {
     }
 }
 
+/// Automatically orchestrates container builds.
+#[derive(Parser, Debug, Clone)]
+#[command(version, about, long_about = None)]
+struct CommandlineArgs {
+    /// CLI container client to use.
+    #[arg(short, long, default_value = "podman")]
+    client: String,
+
+    /// Directory to scan for containerfiles in.
+    #[arg(short, long, default_value = ".")]
+    basepath: PathBuf,
+
+    /// File extension of containerfiles.
+    #[arg(short, long, default_value = "docker")]
+    extension: String,
+
+    /// Remote registry to push built images to.
+    #[arg(short, long, default_value = None)]
+    registry: Option<String>,
+
+    /// Dryrun
+    #[arg(short, long, default_value_t = true)]
+    dryrun: bool,
+}
+
 fn main() {
-    let extension = "docker";
-    let basepath_str = "./integration/";
-    let basepath = PathBuf::from(basepath_str);
-    let registry = "localhost";
-    let client = "podman";
-    let dryrun = true;
-
-    let builder = RegistryBuilder::new(registry, client, dryrun, basepath, extension);
-
-    // println!("{:?}", builder.files);
-    // println!("{:?}", builder.edges);
-    // println!("{:?}", builder.dep_tree);
-    println!("{:?}", builder.build_queue);
+    let args = CommandlineArgs::parse();
+    let builder = RegistryBuilder::new(&args);
     builder.build();
 }
