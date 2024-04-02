@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::vec;
 
 /*
@@ -9,16 +10,25 @@ use std::vec;
 */
 
 trait Builder {
-    fn new(registry: &str, basepath: PathBuf, file_extension: &str) -> Self;
+    fn new(
+        registry: &str,
+        client: &str,
+        dryrun: bool,
+        basepath: PathBuf,
+        file_extension: &str,
+    ) -> Self;
     fn glob(&mut self, basepath: PathBuf, file_extension: &str);
     fn read_edges(&mut self);
     fn make_dependency_tree(&mut self);
     fn make_build_queue(&mut self);
+    fn build(&self);
 }
 
 struct RegistryBuilder {
     file_extension: String,
     registry: String,
+    client: String,
+    dryrun: bool,
     files: Vec<PathBuf>,
     edges: Vec<(String, String)>,
     dep_tree: HashMap<String, Vec<String>>,
@@ -26,10 +36,18 @@ struct RegistryBuilder {
 }
 
 impl Builder for RegistryBuilder {
-    fn new(registry: &str, basepath: PathBuf, file_extension: &str) -> Self {
+    fn new(
+        registry: &str,
+        client: &str,
+        dryrun: bool,
+        basepath: PathBuf,
+        file_extension: &str,
+    ) -> Self {
         let mut rb = Self {
             file_extension: file_extension.to_string(),
             registry: registry.to_string(),
+            client: client.to_string(),
+            dryrun,
             files: vec![],
             edges: vec![],
             dep_tree: HashMap::new(),
@@ -89,7 +107,7 @@ impl Builder for RegistryBuilder {
             for ele in from_files {
                 // let image = ele.split(" ").unwrap().1.to_string();
                 let image = ele.split_whitespace().collect::<Vec<&str>>()[1].to_string();
-                let file_image = self.registry.clone()
+                let file_image = "localhost".to_string()
                     + &&file_string
                         .replacen("./", "/", 1)
                         .replace("__", ":")
@@ -129,6 +147,7 @@ impl Builder for RegistryBuilder {
 
         self.build_queue.append(&mut unique_values);
 
+        // Add everything else to the build queue.
         fn add_nodes(
             dep_tree: HashMap<String, Vec<String>>,
             build_queue: &mut VecDeque<String>,
@@ -153,8 +172,40 @@ impl Builder for RegistryBuilder {
         }
 
         add_nodes(self.dep_tree.to_owned(), &mut self.build_queue, 20);
+    }
 
-        // Add everything else to the build queue.
+    fn build(&self) {
+        for image in &self.build_queue {
+            let mut build_args = vec!["build", "--file", image];
+            let mut tag_args = vec!["tag", image];
+            let remote_image = image.replacen("localhost", &self.registry, 1);
+
+            if &self.client == "podman" {
+                build_args.extend(["--format", "docker"]);
+            }
+
+            if &self.registry != "localhost" {
+                tag_args.extend(vec![image.as_str(), remote_image.as_str()]);
+            }
+
+            if self.dryrun {
+                println!("{} {}", &self.client, build_args.join(" "));
+                if self.registry != "localhost" {
+                    println!("{} {}", &self.client, tag_args.join(" "));
+                }
+            } else {
+                let build_output = Command::new(&self.client)
+                    .args(build_args)
+                    .output()
+                    .expect("");
+                if self.registry != "localhost" {
+                    let tag_output = Command::new(&self.client)
+                        .args(tag_args)
+                        .output()
+                        .expect("");
+                }
+            }
+        }
     }
 }
 
@@ -163,11 +214,14 @@ fn main() {
     let basepath_str = "./integration/";
     let basepath = PathBuf::from(basepath_str);
     let registry = "localhost";
+    let client = "podman";
+    let dryrun = true;
 
-    let builder = RegistryBuilder::new(registry, basepath, extension);
+    let builder = RegistryBuilder::new(registry, client, dryrun, basepath, extension);
 
     // println!("{:?}", builder.files);
     // println!("{:?}", builder.edges);
     // println!("{:?}", builder.dep_tree);
     println!("{:?}", builder.build_queue);
+    builder.build();
 }
