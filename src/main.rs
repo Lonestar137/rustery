@@ -2,7 +2,7 @@ use clap::Parser;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::vec;
 
 /*
@@ -16,6 +16,8 @@ trait Builder {
     fn read_edges(&mut self);
     fn make_dependency_tree(&mut self);
     fn make_build_queue(&mut self);
+    fn build_local_image(&self, image: &String);
+    fn pull_image(&self, image: &String);
     fn build(&self);
 }
 
@@ -157,44 +159,110 @@ impl Builder for RegistryBuilder {
         add_nodes(self.dep_tree.to_owned(), &mut self.build_queue, 20);
     }
 
-    fn build(&self) {
-        for image in &self.build_queue {
-            let mut build_args = vec!["build", "--file", image, "."];
-            let mut tag_args = vec!["tag", image];
-            let remote_image = match &self.config.registry {
-                Some(registry) => image.replacen("localhost", registry.as_str(), 1),
-                None => image.replacen("localhost", "localhost", 1),
-            };
+    fn build_local_image(&self, image: &String) {
+        let local_filepath = image.replacen(":", "__", 1).replacen("localhost", ".", 1)
+            + "."
+            + &self.config.extension;
+        let mut build_args = vec!["build", "--file", &local_filepath, "--tag", &image];
+        let mut tag_args = vec!["tag", image];
+        let remote_image = match &self.config.registry {
+            Some(registry) => image.replacen("localhost", registry.as_str(), 1),
+            None => image.replacen("localhost", "localhost", 1),
+        };
 
-            if &self.config.client == "podman" {
-                build_args.extend(["--format", "docker"]);
-            }
+        if &self.config.client == "podman" {
+            build_args.extend(["--format", "docker"]);
+        }
 
-            // if &self.config.registry != "localhost" {
+        // if &self.config.registry != "localhost" {
+        if self.config.registry.is_some() {
+            tag_args.extend(vec![remote_image.as_str()]);
+        }
+
+        // Add build context
+        let build_context = ".";
+        build_args.extend(vec![build_context]);
+
+        if self.config.dryrun {
+            println!("{} {}", &self.config.client, build_args.join(" "));
             if self.config.registry.is_some() {
-                tag_args.extend(vec![remote_image.as_str()]);
+                println!("{} {}", &self.config.client, tag_args.join(" "));
             }
+        } else {
+            println!("Building: {}", image);
+            // TODO: test this part out.
+            let build_cmd = Command::new(&self.config.client)
+                .args(build_args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("Failed to run build command.");
+            show_process_io(build_cmd);
+            if self.config.registry.is_some() {
+                let tag_cmd = Command::new(&self.config.client)
+                    .args(tag_args)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .expect("Failed to run tag command.");
 
-            if self.config.dryrun {
-                println!("{} {}", &self.config.client, build_args.join(" "));
-                if self.config.registry.is_some() {
-                    println!("{} {}", &self.config.client, tag_args.join(" "));
-                }
-            } else {
-                // TODO: test this part out.
-                let build_output = Command::new(&self.config.client)
-                    .args(build_args)
-                    .output()
-                    .expect("");
-                if self.config.registry.is_some() {
-                    let tag_output = Command::new(&self.config.client)
-                        .args(tag_args)
-                        .output()
-                        .expect("");
-                }
+                show_process_io(tag_cmd);
             }
         }
     }
+
+    fn pull_image(&self, image: &String) {
+        let pull_args = vec!["pull", image];
+
+        if self.config.dryrun {
+            println!("{} {}", &self.config.client, pull_args.join(" "));
+        } else {
+            let pull_command = Command::new(&self.config.client)
+                .args(pull_args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("Failed to run pull command.");
+
+            show_process_io(pull_command);
+        }
+    }
+
+    fn build(&self) {
+        for image in &self.build_queue {
+            if image.starts_with("localhost") {
+                self.build_local_image(image);
+            } else {
+                self.pull_image(image);
+            }
+        }
+    }
+}
+
+fn show_process_io(mut process: Child) {
+    // Capture the stdout and stderr streams
+    let mut stdout = process.stdout.take().unwrap();
+    let mut stderr = process.stderr.take().unwrap();
+
+    // Spawn threads to read from the stdout and stderr streams and print the output
+    let stdout_thread = std::thread::spawn(move || {
+        std::io::copy(&mut stdout, &mut std::io::stdout()).expect("Failed to write to stdout");
+    });
+
+    let stderr_thread = std::thread::spawn(move || {
+        std::io::copy(&mut stderr, &mut std::io::stderr()).expect("Failed to write to stderr");
+    });
+
+    // Wait for the command to finish and collect the exit status
+    let exit_status = process
+        .wait()
+        .expect("Failed to wait for command to finish");
+
+    // Wait for the stdout and stderr threads to finish
+    stdout_thread.join().unwrap();
+    stderr_thread.join().unwrap();
+
+    println!("Command exited with status: {}", exit_status);
 }
 
 /// Automatically orchestrates container builds.
@@ -218,10 +286,16 @@ struct CommandlineArgs {
     registry: Option<String>,
 
     /// Dryrun
-    #[arg(short, long, default_value_t = true)]
+    #[arg(short, long, default_value_t = false)]
     dryrun: bool,
 }
 
+// TODO: add support for a .registry file.
+/*
+Features:
+    - By default, rustery uses the .registry file as the context path starting point.
+    - Can specify various different options in the config, CLI always overwrites though.
+*/
 fn main() {
     let args = CommandlineArgs::parse();
     let builder = RegistryBuilder::new(&args);
