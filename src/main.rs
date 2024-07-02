@@ -1,7 +1,8 @@
 use clap::Parser;
 use std::collections::{HashMap, VecDeque};
+use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::vec;
 
@@ -93,8 +94,9 @@ impl Builder for RegistryBuilder {
                 // let image = ele.split(" ").unwrap().1.to_string();
                 let image = ele.split_whitespace().collect::<Vec<&str>>()[1].to_string();
                 let file_image = "localhost".to_string()
+                    + "/"
                     + &&file_string
-                        .replacen("./", "/", 1)
+                        .replacen("./", "", 1)
                         .replace("__", ":")
                         .replace(".", "")
                         .rsplit_once(&self.config.extension)
@@ -297,7 +299,13 @@ Features:
     - Can specify various different options in the config, CLI always overwrites though.
 */
 fn main() {
-    let args = CommandlineArgs::parse();
-    let builder = RegistryBuilder::new(&args);
-    builder.build();
+    let stdin_args: Vec<String> = env::args().collect();
+    let config_file = Path::new("./.rustery");
+    if stdin_args.len() == 1 && config_file.exists() {
+        println!("CONFIG FILE");
+    } else {
+        let args = CommandlineArgs::parse();
+        let builder = RegistryBuilder::new(&args);
+        builder.build();
+    }
 }
